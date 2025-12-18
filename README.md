@@ -20,7 +20,7 @@
 ## ⚙️ Інсталяція
 Скопіюйте посилання нижче і перейдіть в Додаток -> Параметри -> Розширення -> Додати репозиторій (можна не додавати свою назву, тільки посилання)
 ```
-https://raw.githubusercontent.com/CakesTwix/cloudstream-extensions-uk/master/repo.json
+https://codeberg.org/CakesTwix/cloudstream-extensions-uk/raw/branch/master/repo.json
 ```
 або
 ```
