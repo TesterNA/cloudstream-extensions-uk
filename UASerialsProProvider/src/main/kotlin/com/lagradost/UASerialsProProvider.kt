@@ -173,7 +173,7 @@ class UASerialsProProvider : MainAPI() {
                 document.select("div.fplayer player-control").attr("data-tag1"),
                 AesData::class.java,
             ),
-            "297796CCB81D2551",
+            "297796CCB81D25512",
             false
         ).replace("\\", "").substringBeforeLast("]") + "]"
 
@@ -265,7 +265,7 @@ class UASerialsProProvider : MainAPI() {
                 document.select("div.fplayer player-control").attr("data-tag1"),
                 AesData::class.java,
             ),
-            "297796CCB81D2551",
+            "297796CCB81D25512",
             false
         ).replace("\\", "").substringBeforeLast("]") + "]"
         // Log.d("CakesTwix-Debug", decryptData)
