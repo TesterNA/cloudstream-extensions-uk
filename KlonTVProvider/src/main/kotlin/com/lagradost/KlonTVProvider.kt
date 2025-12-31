@@ -50,7 +50,7 @@ class KlonTVProvider : MainAPI() {
     private val recommendationsSelector = ".related-news__small-card"
     // private val ratingSelector = ".pmovie__subrating img"
 
-    val fileRegex = "file\\s*:\\s*[\"']([^\",']+?)[\"']".toRegex()
+    val fileRegex = "file\\s*:\\s*'([^']+)'".toRegex()
 
     override suspend fun getMainPage(
         page: Int,
@@ -216,9 +216,9 @@ class KlonTVProvider : MainAPI() {
 
         tryParseJson<List<PlayerJson>>(playerRawJson)?.forEach { dub ->
             dub.folder.filter { it.title == dataList[0] }
-                ?.flatMap { it.folder }
-                ?.filter { it.title == dataList[1] }
-                ?.map {
+                .flatMap { it.folder }
+                .filter { it.title == dataList[1] }
+                .map {
                     M3u8Helper.generateM3u8(
                         source = dub.title,
                         streamUrl = it.file,
@@ -227,7 +227,7 @@ class KlonTVProvider : MainAPI() {
 
                     if (!it.subtitle.isNullOrBlank()) {
                         subtitleCallback.invoke(
-                            SubtitleFile(
+                            newSubtitleFile(
                                 it.subtitle.substringAfterLast("[").substringBefore("]"),
                                 it.subtitle.substringAfter("]")
                             )
