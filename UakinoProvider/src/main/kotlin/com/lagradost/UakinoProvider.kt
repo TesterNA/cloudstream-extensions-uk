@@ -213,189 +213,94 @@ class UakinoProvider : MainAPI() {
 
     // It works when I click to view the series
     override suspend fun loadLinks(
-        data: String, // link, episode name
+        data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val dataList = data.split(",")
-        // Log.d("CakesTwix-Debug", data)
-        // TODO: OPTIMIZE code!!! Remove this shitty code as soon as possible!!!!!!
-        if (dataList.size == 1) {
+
+        // 1. Визначаємо URL для запиту та назву епізоду (якщо є)
+        val (requestUrl, targetEpisode) = if (dataList.size == 1) {
             val id = data.split("/").last().split("-").first()
-            val responseGet =
-                app.get(
-                    "$mainUrl/engine/ajax/playlists.php?news_id=$id&xfield=playlist&time=${Date().time}",
-                        headers = mapOf(
-                                "Referer" to mainUrl,
-                                "X-Requested-With" to "XMLHttpRequest",
-                                "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; rv:126.0) Gecko/20100101 Firefox/126.0",
-                        )
-                )
-                    .parsedSafe<Responses>()
-            // Log.d("CakesTwix-Debug", responseGet.toString())
-            if (responseGet?.success == true) { // Its serial
-                responseGet.response?.let {
-                    Jsoup.parse(it).select("div.playlists-videos li").mapNotNull { eps ->
-                        var href = eps.attr("data-file") // ashdi
-                        // Can be without https:
-                        if (!href.contains("https://")) {
-                            href = "https:$href"
-                        }
-                        val dub = eps.attr("data-voice") // FanWoxUA
-
-                        // Get m3u from player script
-                        app.get(href, referer = "$mainUrl/").document.select("script").map { script
-                            ->
-                            if (script.data().contains("var player = new Playerjs({")) {
-                                val m3uLink = fileRegex.find(script.data())?.groups?.get(1)?.value ?: ""
-
-                                // Add as source
-                                M3u8Helper.generateM3u8(
-                                    source = dub,
-                                    streamUrl = m3uLink,
-                                    referer = "https://ashdi.vip/"
-                                ).dropLast(1).forEach(callback)
-
-                                val subtitleUrl = subsRegex.find(script.data())?.groups?.get(1)?.value ?: ""
-
-                                if(subtitleUrl.isNullOrBlank()) return true
-
-                                subtitleCallback.invoke(
-                                    newSubtitleFile(
-                                        subtitleUrl.substringAfterLast("[").substringBefore("]"),
-                                        subtitleUrl.substringAfter("]")
-                                    )
-                                )
-                            }
-                        }
-                    }
-                }
-            } else {
-                // Its maybe film
-                val document = app.get(data).document
-                val iframeUrl = document.selectFirst("iframe#pre")?.attr("src")
-                // Get m3u from player script
-                if (iframeUrl != null) {
-                    app.get(iframeUrl, referer = "$mainUrl/").document.select("script").map { script
-                        ->
-                        if (script.data().contains("var player = new Playerjs({")) {
-                            val m3uLink = fileRegex.find(script.data())?.groups?.get(1)?.value ?: ""
-
-                            // Add as source
-                            M3u8Helper.generateM3u8(
-                                source =
-                                document
-                                    .selectFirst("h1 span.solototle")
-                                    ?.text()
-                                    ?.trim()
-                                    .toString(),
-                                streamUrl = m3uLink,
-                                referer = "https://ashdi.vip/"
-                            ).dropLast(1).forEach(callback)
-
-                            val subtitleUrl = subsRegex.find(script.data())?.groups?.get(1)?.value ?: ""
-
-                            if(subtitleUrl.isNullOrBlank()) return true
-
-                            subtitleCallback.invoke(
-                                newSubtitleFile(
-                                    subtitleUrl.substringAfterLast("[").substringBefore("]"),
-                                    subtitleUrl.substringAfter("]")
-                                )
-                            )
-                        }
-                    }
-                }
-            }
-            return true
+            "$mainUrl/engine/ajax/playlists.php?news_id=$id&xfield=playlist&time=${Date().time}" to null
+        } else {
+            dataList[0] to dataList[1]
         }
 
-        val responseGet = app.get(dataList[0],
-                headers = mapOf(
-                        "Referer" to mainUrl,
-                        "X-Requested-With" to "XMLHttpRequest",
-                        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; rv:126.0) Gecko/20100101 Firefox/126.0",
-                )).parsedSafe<Responses>() // ajax link
-        // Log.d("CakesTwix-Debug", responseGet.toString())
-        if (responseGet?.success == true) { // Its serial
-            responseGet.response.let {
-                Jsoup.parse(it)
-                    .select("div.playlists-videos li:contains(${dataList[1]})")
-                    .mapNotNull { eps ->
-                        if (eps.text() != dataList[1]) return@mapNotNull
-                        var href = eps.attr("data-file") // ashdi
-                        // Can be without https:
-                        if (!href.contains("https://")) {
-                            href = "https:$href"
-                        }
-                        val dub = eps.attr("data-voice") // FanWoxUA
+        // 2. Робимо запит до API
+        val responseGet = app.get(requestUrl, headers = mapOf(
+            "Referer" to mainUrl,
+            "X-Requested-With" to "XMLHttpRequest",
+            "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; rv:126.0) Gecko/20100101 Firefox/126.0",
+        )).parsedSafe<Responses>()
 
-                        // Get m3u from player script
-                        app.get(href, referer = "$mainUrl/").document.select("script").map { script
-                            ->
-                            if (script.data().contains("var player = new Playerjs({")) {
-                                val m3uLink = fileRegex.find(script.data())?.groups?.get(1)?.value ?: ""
+        if (responseGet?.success == true && responseGet.response != null) {
+            // Логіка для серіалів
+            val document = Jsoup.parse(responseGet.response!!)
+            val selector = if (targetEpisode != null) {
+                "div.playlists-videos li:contains($targetEpisode)"
+            } else {
+                "div.playlists-videos li"
+            }
 
-                                // Add as source
-                                M3u8Helper.generateM3u8(
-                                    source = dub,
-                                    streamUrl = m3uLink,
-                                    referer = "https://ashdi.vip/"
-                                ).dropLast(1).forEach(callback)
+            document.select(selector).forEach { eps ->
+                // Якщо шукаємо конкретну серію, перевіряємо точний збіг тексту
+                if (targetEpisode != null && eps.text() != targetEpisode) return@forEach
 
-                                val subtitleUrl = subsRegex.find(script.data())?.groups?.get(1)?.value ?: ""
+                var href = eps.attr("data-file")
+                if (href.isNotEmpty() && !href.contains("https://")) {
+                    href = "https:$href"
+                }
+                val dub = eps.attr("data-voice")
 
-                                if(subtitleUrl.isNullOrBlank()) return true
-
-                                subtitleCallback.invoke(
-                                    newSubtitleFile(
-                                        subtitleUrl.substringAfterLast("[").substringBefore("]"),
-                                        subtitleUrl.substringAfter("]")
-                                    )
-                                )
-                            }
-                        }
-                    }
+                extractPlayerJs(href, dub, callback, subtitleCallback)
             }
         } else {
-            // Its maybe film
-            val document = app.get(data).document
-            val iframeUrl = document.selectFirst("iframe#pre")?.attr("src")
-            // Get m3u from player script
+            // Логіка для фільмів (або якщо AJAX не повернув успіх)
+            val filmDoc = app.get(dataList[0]).document
+            val iframeUrl = filmDoc.selectFirst("iframe#pre")?.attr("src")
+
             if (iframeUrl != null) {
-                app.get(iframeUrl, referer = "$mainUrl/").document.select("script").map { script ->
-                    if (script.data().contains("var player = new Playerjs({")) {
-                        val m3uLink = fileRegex.find(script.data())?.groups?.get(1)?.value ?: ""
-
-                        // Add as source
-                        M3u8Helper.generateM3u8(
-                            source =
-                            document
-                                .selectFirst("h1 span.solototle")
-                                ?.text()
-                                ?.trim()
-                                .toString(),
-                            streamUrl = m3uLink,
-                            referer = "https://ashdi.vip/"
-                        ).dropLast(1).forEach(callback)
-
-                        val subtitleUrl = subsRegex.find(script.data())?.groups?.get(1)?.value ?: ""
-
-                        if(subtitleUrl.isNullOrBlank()) return true
-
-                        subtitleCallback.invoke(
-                            newSubtitleFile(
-                                subtitleUrl.substringAfterLast("[").substringBefore("]"),
-                                subtitleUrl.substringAfter("]")
-                            )
-                        )
-                    }
-                }
+                val title = filmDoc.selectFirst("h1 span.solototle")?.text()?.trim() ?: "Movie"
+                extractPlayerJs(iframeUrl, title, callback, subtitleCallback)
             }
         }
 
         return true
+    }
+
+    private suspend fun extractPlayerJs(
+        url: String,
+        sourceName: String,
+        callback: (ExtractorLink) -> Unit,
+        subtitleCallback: (SubtitleFile) -> Unit
+    ) {
+        val playerResponse = app.get(url, referer = "$mainUrl/").document
+        playerResponse.select("script").forEach { script ->
+            val scriptData = script.data()
+            if (scriptData.contains("var player = new Playerjs({")) {
+
+                val m3uLink = fileRegex.find(scriptData)?.groups?.get(1)?.value ?: ""
+                if (m3uLink.isNotEmpty()) {
+                    M3u8Helper.generateM3u8(
+                        source = sourceName,
+                        streamUrl = m3uLink,
+                        referer = "https://ashdi.vip/"
+                    ).dropLast(1).forEach(callback)
+                }
+
+                val subtitleUrl = subsRegex.find(scriptData)?.groups?.get(1)?.value ?: ""
+                if (subtitleUrl.isNotBlank()) {
+                    subtitleCallback.invoke(
+                        newSubtitleFile(
+                            subtitleUrl.substringAfterLast("[").substringBefore("]"),
+                            subtitleUrl.substringAfter("]")
+                        )
+                    )
+                }
+            }
+        }
     }
 
     data class Responses(
