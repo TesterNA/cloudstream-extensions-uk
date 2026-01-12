@@ -10,17 +10,16 @@ import com.lagradost.models.GeneralInfoMovie
 import com.lagradost.models.SearchModel
 import org.jsoup.nodes.Element
 
-open class UASerialProvider(url: String, name: String) : MainAPI() {
+open class UASerialProvider(url: String, override var name: String) : MainAPI() {
 
     // Basic Info
     override var mainUrl = url
-    override var name = name
     override val hasMainPage = true
     override var lang = "uk"
     override val hasQuickSearch = true
     override val hasDownloadSupport = true
     override val supportedTypes = setOf(
-        TvType.TvSeries,
+        TvType.TvSeries, TvType.Movie
     )
 
     val fileRegex = "file\\s*:\\s*[\"']([^\",']+?)[\"']".toRegex()
