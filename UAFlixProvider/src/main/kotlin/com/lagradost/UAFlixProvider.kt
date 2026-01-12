@@ -22,6 +22,7 @@ import com.lagradost.cloudstream3.newAnimeSearchResponse
 import com.lagradost.cloudstream3.newEpisode
 import com.lagradost.cloudstream3.newHomePageResponse
 import com.lagradost.cloudstream3.newMovieLoadResponse
+import com.lagradost.cloudstream3.newSubtitleFile
 import com.lagradost.cloudstream3.toRatingInt
 import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
@@ -100,7 +101,7 @@ class UAFlixProvider : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse> {
         val document = app.get(
-            url = "$mainUrl/index.php?do=search&subaction=search&search_start=1&story=$query",
+            url = "$mainUrl/index.php?do=search&subaction=search&search_start=0&story=$query",
         ).document
 
         return document.select(".sres-wrap").map {
@@ -235,18 +236,31 @@ class UAFlixProvider : MainAPI() {
                 playerUrl = "https:$playerUrl"
             }
             if(playerUrl.contains("/vod/")){
-                var playerRawJson = app.get(playerUrl,
+                val playerDocument = app.get(playerUrl,
                         headers = mapOf(
                                 "Referer" to "https://uafix.net/",
-                        )).document.select("script").html()
+                        )).document
+                val playerRawJson = playerDocument.select("script").html()
                         .substringAfterLast("file:\"")
                         .substringBefore("\",")
+
+                val subtitleString = playerDocument.select("script").html()
+                    .substringAfterLast("subtitle:\"")
+                    .substringBefore("\",")
 
                 M3u8Helper.generateM3u8(
                         source = "UAFlix",
                         streamUrl = playerRawJson,
                         referer = "https://tortuga.wtf/"
                 ).dropLast(1).forEach(callback)
+
+                subtitleCallback.invoke(
+                    newSubtitleFile(
+                        subtitleString.substringAfterLast("[").substringBefore("]"),
+                        subtitleString.substringAfter("]").dropLast(1)
+                    )
+                )
+
                 return true
             }
             val playerRawJson = app.get(playerUrl, referer = "https://uafix.net").document.select("script").html()
@@ -260,6 +274,13 @@ class UAFlixProvider : MainAPI() {
                             streamUrl = dubs.folder[0].folder[0].file,
                             referer = "https://tortuga.wtf/"
                     ).dropLast(1).forEach(callback)
+
+                    subtitleCallback.invoke(
+                        newSubtitleFile(
+                            dubs.folder[0].folder[0].subtitle.substringAfterLast("[").substringBefore("]"),
+                            dubs.folder[0].folder[0].subtitle.substringAfter("]").dropLast(1)
+                        )
+                    )
                 }
             }
 
