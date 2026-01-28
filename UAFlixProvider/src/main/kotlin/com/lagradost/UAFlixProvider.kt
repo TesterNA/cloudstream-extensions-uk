@@ -3,6 +3,7 @@ package com.lagradost
 import com.lagradost.cloudstream3.AnimeSearchResponse
 import com.lagradost.cloudstream3.DubStatus
 import com.lagradost.cloudstream3.Episode
+import com.lagradost.cloudstream3.HomePageList
 import com.lagradost.cloudstream3.HomePageResponse
 import com.lagradost.cloudstream3.LoadResponse
 import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
@@ -71,6 +72,8 @@ class UAFlixProvider : MainAPI() {
     private val descriptionSelector = "div[id=serial-kratko]"
     private val ratingSelector = ".mediablock .rat-imdb"
 
+    private val isHorizontal = true
+
     override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
@@ -80,7 +83,16 @@ class UAFlixProvider : MainAPI() {
         val home = document.select(animeSelector).map {
             it.toSearchResponse()
         }
-        return newHomePageResponse(request.name, home)
+        return newHomePageResponse(
+            listOf(
+                HomePageList(
+                    request.name,
+                    home,
+                    isHorizontalImages = isHorizontal
+                )
+            ),
+            hasNext = true
+        )
     }
 
     private fun Element.toSearchResponse(): AnimeSearchResponse {
