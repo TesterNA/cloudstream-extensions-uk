@@ -134,8 +134,8 @@ class UASerialsProProvider : MainAPI() {
         val document = app.get(url).document
         // Parse info
 
-        val title = document.select("span.oname_ua").text().trim().toString()
-        val engTitle = document.select(".pmovie__original-title").text()
+        val title = document.select(".short-title").text()
+        val engTitle = document.select(".oname").text()
         val poster = document.selectFirst("div.fimg.img-wide img")?.attr("src")
         val tags = mutableListOf<String>()
         val actors = mutableListOf<String>()
@@ -211,7 +211,6 @@ class UASerialsProProvider : MainAPI() {
         } else { // Parse as Movie.
             newMovieLoadResponse(title, url, TvType.Movie, "$title, ${movieJson[0].url}") {
                 this.posterUrl = poster
-                this.name = engTitle
                 this.score = Score.from10(rating)
                 this.year = year
                 this.plot = description
