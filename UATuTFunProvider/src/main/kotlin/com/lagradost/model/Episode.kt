@@ -1,11 +1,13 @@
 package com.lagradost.model
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.fasterxml.jackson.annotation.JsonProperty
 
+@JsonIgnoreProperties(ignoreUnknown = true)
 data class Episode(
-    @JsonProperty("file") val file: String,
-    @JsonProperty("title") var name: String,
-    @JsonProperty("id") val id: String,
-    @JsonProperty("poster") val poster: String,
-    @JsonProperty("subtitle") val subtitle: String
+    @param:JsonProperty("file") val file: String,
+    @param:JsonProperty("title") var name: String,
+    @param:JsonProperty("id") val id: String,
+    @param:JsonProperty("poster") val poster: String,
+    @param:JsonProperty("subtitle") val subtitle: String
 )
