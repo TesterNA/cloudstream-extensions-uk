@@ -97,7 +97,7 @@ class UATuTFunProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse {
-//        Log.d("DEBUG load", "Url: $url")
+
         val document = app.get(url).document
 
         return when (val tvType = getTvType(url)) {
@@ -285,7 +285,6 @@ class UATuTFunProvider : MainAPI() {
         seriesUrl: String,
     ): List<SeriesJsonDataModel> {
         val document = app.get(seriesUrl).document
-//        Log.d("DEBUG getSeriesJsonDataModel", "seriesUrl: $seriesUrl document: ${document.childrenSize()}")
         val m3uUrl = getM3uUrl(document)
 
         val text = if (m3uUrl.startsWith("http") && m3uUrl.endsWith(".txt")) {
@@ -351,11 +350,17 @@ class UATuTFunProvider : MainAPI() {
     private suspend fun getM3uUrl(document: Document): String {
         var sourceUrl = fixUrl(document.select("iframe").attr("data-src"))
 
+        if (sourceUrl.isEmpty()) {
+            val el: Element? = document.select("[data-iframe^=https://ashdi.vip]").firstOrNull()
+            sourceUrl = fixUrl(el?.attr("data-iframe") ?: "")
+        }
+
         if (sourceUrl.contains("youtube")) {
             sourceUrl = document.select("div.video-inside")
                 .first { !it.select("div[data-iframe]").isEmpty() }
                 .select("div[data-iframe]").attr("data-iframe")
         }
+
         val documentM3u = app.get(sourceUrl).document
         var m3uUrl = documentM3u.select("iframe").attr("src")
         if (m3uUrl.endsWith(".txt")) {
@@ -404,8 +409,7 @@ class UATuTFunProvider : MainAPI() {
             }
         }
 
-//        Log.d("DEBUG getEpisodes", "Episodes: $episodes")
-        if (episodes.isEmpty()) {//fix series without episodes description
+        if (episodes.isEmpty()) {// todo fix series without episodes description
             val seriesJsonDataModel = getSeriesJsonDataModel(url)
             val collectionOrObjectNotNull =
                 seriesJsonDataModel.isNotEmpty() && seriesJsonDataModel.firstOrNull() != null

@@ -1,8 +1,10 @@
 package com.lagradost.model
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.fasterxml.jackson.annotation.JsonProperty
 
+@JsonIgnoreProperties(ignoreUnknown = true)
 data class SeriesJsonDataModel(
-    @JsonProperty("title") var seriesDubName: String,
-    @JsonProperty("folder") var seasons: List<Season>
+    @param:JsonProperty("title") var seriesDubName: String,
+    @param:JsonProperty("folder") var seasons: List<Season>
 )

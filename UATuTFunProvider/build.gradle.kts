@@ -1,5 +1,5 @@
 // use an integer for version numbers
-version = 3
+version = 4
 
 dependencies {
     // https://mvnrepository.com/artifact/com.fasterxml.jackson.core/jackson-databind
