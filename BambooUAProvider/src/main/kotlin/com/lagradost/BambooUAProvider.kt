@@ -8,7 +8,6 @@ import com.lagradost.cloudstream3.HomePageResponse
 import com.lagradost.cloudstream3.LoadResponse
 import com.lagradost.cloudstream3.MainAPI
 import com.lagradost.cloudstream3.MainPageRequest
-import com.lagradost.cloudstream3.Score
 import com.lagradost.cloudstream3.SearchResponse
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.TvType
@@ -200,7 +199,6 @@ class BambooUAProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-
         // Movie
         if(data.startsWith("https://bambooua.com")){
             val document = app.get(data).document
@@ -209,8 +207,8 @@ class BambooUAProvider : MainAPI() {
                 M3u8Helper.generateM3u8(
                     source = it.attr("data-title"),
                     streamUrl = it.attr("data-file"),
-                    referer = ""
-                ).dropLast(1).forEach(callback)
+                    referer = "https://bambooua.com/"
+                ).forEach(callback)
             }
             return true
         }
@@ -220,7 +218,7 @@ class BambooUAProvider : MainAPI() {
             source = "Bambooua",
             streamUrl = data,
             referer = ""
-        ).dropLast(1).forEach(callback)
+        ).forEach(callback)
 
         return true
     }
