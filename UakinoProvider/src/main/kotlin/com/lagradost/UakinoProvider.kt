@@ -74,7 +74,7 @@ class UakinoProvider : MainAPI() {
     override suspend fun search(query: String): List<SearchResponse> {
         val document =
             app.post(
-                url = mainUrl,
+                url = "$mainUrl/ua/",
                 data =
                 mapOf(
                     "do" to "search",
