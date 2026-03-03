@@ -1,5 +1,6 @@
 package com.lagradost
 
+import android.util.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
@@ -91,7 +92,8 @@ class UFDubProvider : MainAPI() {
 
         val description = document.select("div.full-text p").text()
         // val author = someInfo.select("strong:contains(Студія:)").next().html()
-        val score = toRatingInt(document.select(".fp-rate"))
+        // TODO: Drop for now
+        //val score = toRatingInt(document.select(".fp-rate"))
 
         val recommendations = document.select(".rel").map {
             newMovieSearchResponse(it.select(".img-box img").attr("alt"), it.attr("href"), TvType.Anime) {
@@ -152,7 +154,7 @@ class UFDubProvider : MainAPI() {
             this.year = year
             this.plot = description
             this.tags = tags
-            this.score = Score.from10(score)
+            // this.score = Score.from10(score)
             this.recommendations = recommendations
         }
     }
@@ -171,17 +173,5 @@ class UFDubProvider : MainAPI() {
         // Add as source
         callback(newExtractorLink(m3u8Url,"UFDub", m3u8Url, ExtractorLinkType.VIDEO))
         return true
-    }
-
-    private fun toRatingInt(el: Elements): String {
-        // +54
-        val raterate = el.select(".ratingtypeplusminus").text().toInt();
-        // 60
-        val ratecount = el.select("span").last()!!.text().toInt();
-
-        val minusik = (ratecount - raterate) / 2;
-        val plusik = ratecount - minusik;
-
-        return (plusik.toFloat() / ratecount.toFloat() * 10).toString();
     }
 }
