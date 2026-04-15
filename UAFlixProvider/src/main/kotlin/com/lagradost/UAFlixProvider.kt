@@ -96,7 +96,7 @@ class UAFlixProvider : MainAPI() {
     }
 
     private fun Element.toSearchResponse(): AnimeSearchResponse {
-        val title = this.selectFirst("$titleSelector,.sres-wrap")?.attr("alt")?.trim().toString()
+        val title = this.selectFirst("$titleSelector,.sres-img img")?.attr("alt")?.trim().toString()
         // val engTitle = this.selectFirst(engTitleSelector)?.text()?.trim().toString()
         val href = this.selectFirst("$hrefSelector,.sres-wrap")?.attr("href").toString()
         val posterUrl = fixUrl(this.select("$posterSelector,.sres-img img").attr("src"))
@@ -223,7 +223,7 @@ class UAFlixProvider : MainAPI() {
 
             newMovieLoadResponse(title, url, tvType, url) {
                 this.posterUrl = poster
-                this.name = engTitle
+                this.name = title
                 this.year = year
                 this.plot = description
                 this.tags = tags
