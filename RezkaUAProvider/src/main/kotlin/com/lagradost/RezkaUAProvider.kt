@@ -111,7 +111,7 @@ class RezkaUAProvider : MainAPI() {
 
         // Single-translator page: no list rendered. Pull translator_id + flags from
         // sof.tv.initCDN(Movies|Series)Events(post_id, translator_id, camrip, ads, director, ...)
-        val m = initCdnRegex.find(document.html()) ?: return emptyList()
+        val m = initCdnRegex.find(document.outerHtml()) ?: return emptyList()
         return listOf(
             Translator(
                 id = m.groupValues[2],
@@ -223,8 +223,9 @@ class RezkaUAProvider : MainAPI() {
         // Use page URL's own origin so AJAX session matches the page's session/cookies/favs.
         val origin = "https?://[^/]+".toRegex().find(pageUrl)?.value ?: mainUrl
 
-        val document = app.get(pageUrl).document
-        val pageHtml = document.html()
+        // Single fetch — read body once, then parse for both raw regex and Jsoup ops.
+        val pageHtml = app.get(pageUrl).text
+        val document = org.jsoup.Jsoup.parse(pageHtml, pageUrl)
         val favs = document.selectFirst("#ctrl_favs")?.attr("value").orEmpty()
         val translators = parseTranslators(document)
         if (translators.isEmpty()) return false
@@ -260,8 +261,12 @@ class RezkaUAProvider : MainAPI() {
                 }
                 ?.attr("href")
             if (!epHref.isNullOrBlank()) {
+                // Pages on .in still embed episode hrefs to .co (or vice versa). Force the
+                // episode URL onto the same origin we already loaded to keep session/cookies.
+                val sameOriginEp = epHref.replace("https?://[^/]+".toRegex(), origin)
                 runCatching {
-                    val epHtml = app.get(epHref).document.html()
+                    // Use raw response text — Jsoup's .html() may HTML-escape JSON inside <script>.
+                    val epHtml = app.get(sameOriginEp).text
                     val epStreams = inlineStreamsRegex.find(epHtml)?.groupValues?.get(1)
                         ?.replace("\\/", "/")
                     if (epStreams != null) {
