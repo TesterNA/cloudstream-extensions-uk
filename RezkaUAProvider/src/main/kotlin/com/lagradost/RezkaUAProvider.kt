@@ -20,6 +20,7 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 
 class RezkaUAProvider : MainAPI() {
@@ -76,22 +77,29 @@ class RezkaUAProvider : MainAPI() {
         return document.select(".b-content__inline_item").map { it.toSearchResponse() }
     }
 
-    private val streamsRegex =
-        "initCDN(?:Movies|Series)Events\\([^,]+,[^,]+,[^,]+,[^,]+,[^,]+,[^,]+,[^,]+,[^,]+,\\s*\\{[^}]*\"streams\":\"([^\"]+)\""
-            .toRegex()
-    private val translatorRegex =
-        "<li[^>]*class=\"b-translator__item[^\"]*\"[^>]*data-translator_id=\"(\\d+)\"[^>]*>([^<]+)</li>"
-            .toRegex()
-    private val seasonRegex =
-        "<li[^>]*class=\"b-simple_season__item[^\"]*\"[^>]*data-tab_id=\"(\\d+)\"[^>]*>([^<]+)</li>"
-            .toRegex()
-    private val episodeRegex =
-        "<li[^>]*class=\"b-simple_episode__item[^\"]*\"[^>]*data-season_id=\"(\\d+)\"[^>]*data-episode_id=\"(\\d+)\"[^>]*>([^<]+)</li>"
-            .toRegex()
+    private data class Translator(
+        val id: String,
+        val name: String,
+        val camrip: String,
+        val ads: String,
+        val director: String,
+    )
+
+    private fun parseTranslators(document: Document): List<Translator> =
+        document.select("#translators-list .b-translator__item, .b-translators__list .b-translator__item")
+            .map {
+                Translator(
+                    id = it.attr("data-translator_id"),
+                    name = it.attr("title").ifBlank { it.text() }.trim(),
+                    camrip = it.attr("data-camrip").ifBlank { "0" },
+                    ads = it.attr("data-ads").ifBlank { "0" },
+                    director = it.attr("data-director").ifBlank { "0" },
+                )
+            }
+            .filter { it.id.isNotBlank() }
 
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
-        val html = document.html()
 
         val title = document.selectFirst(".b-post__title h1")?.text().orEmpty()
         val origTitle = document.selectFirst(".b-post__origtitle")?.text()
@@ -115,15 +123,8 @@ class RezkaUAProvider : MainAPI() {
         val postId = document.selectFirst("[data-post_id]")?.attr("data-post_id")
             ?: document.selectFirst(".b-translator__item")?.attr("data-id").orEmpty()
 
-        // Translators: id -> name. If page has no translator list, use empty -> default.
-        val translators = translatorRegex.findAll(html).map { it.groupValues[1] to it.groupValues[2] }.toList()
-
         if (!isSeries) {
-            // Movie: streams already in initCDNMoviesEvents script
-            val activeTranslator = document.selectFirst(".b-translator__item.active")?.attr("data-translator_id")
-                ?: translators.firstOrNull()?.first.orEmpty()
-            val data = "$postId|$activeTranslator|movie|${url}"
-            return newMovieLoadResponse(title, url, TvType.Movie, data) {
+            return newMovieLoadResponse(title, url, TvType.Movie, "$postId|movie|$url") {
                 this.posterUrl = poster
                 this.year = year
                 this.plot = description
@@ -134,19 +135,15 @@ class RezkaUAProvider : MainAPI() {
         }
 
         // Series: parse seasons + episodes from initial active translator block
-        val seasons = seasonRegex.findAll(html).associate { it.groupValues[1].toInt() to it.groupValues[2] }
-        val episodes = episodeRegex.findAll(html).map {
-            val s = it.groupValues[1].toInt()
-            val e = it.groupValues[2].toInt()
-            val name = it.groupValues[3]
-            val activeTranslator = document.selectFirst(".b-translator__item.active")?.attr("data-translator_id")
-                ?: translators.firstOrNull()?.first.orEmpty()
-            newEpisode("$postId|$activeTranslator|series|$s|$e|$url") {
-                this.name = name
+        val episodes = document.select(".b-simple_episode__item").map {
+            val s = it.attr("data-season_id").toIntOrNull() ?: 1
+            val e = it.attr("data-episode_id").toIntOrNull() ?: 1
+            newEpisode("$postId|series|$s|$e|$url") {
+                this.name = it.text()
                 this.season = s
                 this.episode = e
             }
-        }.toList()
+        }
 
         return newTvSeriesLoadResponse(title, url, tvType, episodes) {
             this.posterUrl = poster
@@ -165,7 +162,6 @@ class RezkaUAProvider : MainAPI() {
         re.findAll(streams).forEach { m ->
             val q = m.groupValues[1]
             val urls = m.groupValues[2].split(" or ")
-            // Prefer manifest.m3u8 link, fallback to first url
             val pick = (urls.firstOrNull { it.endsWith("manifest.m3u8") }
                 ?: urls.firstOrNull())?.trim().orEmpty()
             if (pick.isEmpty()) return@forEach
@@ -193,25 +189,32 @@ class RezkaUAProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        // data shape: "<postId>|movie|<url>"  OR  "<postId>|series|<season>|<episode>|<url>"
         val parts = data.split("|")
         val postId = parts[0]
+        val kind = parts[1]
         val pageUrl = parts.last()
 
-        // Discover all translators from the page
-        val pageHtml = app.get(pageUrl).document.html()
-        val translators = translatorRegex.findAll(pageHtml)
-            .map { it.groupValues[1] to it.groupValues[2] }
-            .toList()
-            .ifEmpty { listOf(parts[1] to "Default") }
+        val document = app.get(pageUrl).document
+        val favs = document.selectFirst("#ctrl_favs")?.attr("value").orEmpty()
+        val translators = parseTranslators(document)
+            .ifEmpty {
+                // single-translator page — try with empty/zero translator id from initCDN args
+                listOf(Translator(id = "0", name = "Default", camrip = "0", ads = "0", director = "0"))
+            }
 
-        for ((translatorId, translatorName) in translators) {
+        for (t in translators) {
             val form = mutableMapOf(
                 "id" to postId,
-                "translator_id" to translatorId,
+                "translator_id" to t.id,
+                "is_camrip" to t.camrip,
+                "is_ads" to t.ads,
+                "is_director" to t.director,
+                "favs" to favs,
             )
-            if (parts[2] == "series") {
-                form["season"] = parts[3]
-                form["episode"] = parts[4]
+            if (kind == "series") {
+                form["season"] = parts[2]
+                form["episode"] = parts[3]
                 form["action"] = "get_stream"
             } else {
                 form["action"] = "get_movie"
@@ -230,6 +233,9 @@ class RezkaUAProvider : MainAPI() {
                 continue
             }
 
+            // success may be true or false; only parse url if success
+            if (!resp.contains("\"success\":true")) continue
+
             val streams = "\"url\":\"([^\"]+)\"".toRegex().find(resp)?.groupValues?.get(1)
                 ?.replace("\\/", "/") ?: continue
 
@@ -237,7 +243,7 @@ class RezkaUAProvider : MainAPI() {
                 callback(
                     newExtractorLink(
                         source = name,
-                        name = "$name ($translatorName)",
+                        name = "$name (${t.name})",
                         url = link,
                         type = ExtractorLinkType.M3U8,
                     ) {
