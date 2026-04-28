@@ -85,8 +85,12 @@ class RezkaUAProvider : MainAPI() {
         val director: String,
     )
 
-    private fun parseTranslators(document: Document): List<Translator> =
-        document.select("#translators-list .b-translator__item, .b-translators__list .b-translator__item")
+    private val initCdnRegex =
+        "initCDN(?:Movies|Series)Events\\(\\s*(\\d+)\\s*,\\s*(\\d+)\\s*,\\s*(\\d+)\\s*,\\s*(\\d+)\\s*,\\s*(\\d+)"
+            .toRegex()
+
+    private fun parseTranslators(document: Document): List<Translator> {
+        val list = document.select("#translators-list .b-translator__item, .b-translators__list .b-translator__item")
             .map {
                 Translator(
                     id = it.attr("data-translator_id"),
@@ -97,6 +101,22 @@ class RezkaUAProvider : MainAPI() {
                 )
             }
             .filter { it.id.isNotBlank() }
+
+        if (list.isNotEmpty()) return list
+
+        // Single-translator page: no list rendered. Pull translator_id + flags from
+        // sof.tv.initCDN(Movies|Series)Events(post_id, translator_id, camrip, ads, director, ...)
+        val m = initCdnRegex.find(document.html()) ?: return emptyList()
+        return listOf(
+            Translator(
+                id = m.groupValues[2],
+                name = "Default",
+                camrip = m.groupValues[3],
+                ads = m.groupValues[4],
+                director = m.groupValues[5],
+            )
+        )
+    }
 
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
@@ -198,10 +218,7 @@ class RezkaUAProvider : MainAPI() {
         val document = app.get(pageUrl).document
         val favs = document.selectFirst("#ctrl_favs")?.attr("value").orEmpty()
         val translators = parseTranslators(document)
-            .ifEmpty {
-                // single-translator page — try with empty/zero translator id from initCDN args
-                listOf(Translator(id = "0", name = "Default", camrip = "0", ads = "0", director = "0"))
-            }
+        if (translators.isEmpty()) return false
 
         for (t in translators) {
             val form = mutableMapOf(
@@ -242,8 +259,8 @@ class RezkaUAProvider : MainAPI() {
             parseStreams(streams).forEach { (q, link) ->
                 callback(
                     newExtractorLink(
-                        source = name,
-                        name = "$name (${t.name})",
+                        source = "$name (${t.name})",
+                        name = "$name (${t.name}) ${q}p",
                         url = link,
                         type = ExtractorLinkType.M3U8,
                     ) {
