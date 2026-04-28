@@ -249,6 +249,36 @@ class RezkaUAProvider : MainAPI() {
             }
         }
 
+        // For series: also try episode-specific URL for active translator (its href is on the page).
+        // This is a reliable fallback if AJAX can't be reached from this client (cookie/session issues).
+        if (kind == "series") {
+            val s = parts[2]
+            val e = parts[3]
+            val epHref = document.select(".b-simple_episode__item")
+                .firstOrNull {
+                    it.attr("data-season_id") == s && it.attr("data-episode_id") == e
+                }
+                ?.attr("href")
+            if (!epHref.isNullOrBlank()) {
+                runCatching {
+                    val epHtml = app.get(epHref).document.html()
+                    val epStreams = inlineStreamsRegex.find(epHtml)?.groupValues?.get(1)
+                        ?.replace("\\/", "/")
+                    if (epStreams != null) {
+                        parseStreams(epStreams).forEach { (q, link) ->
+                            val src = "$activeName ${q}p".trim()
+                            callback(
+                                newExtractorLink(link, src, link, ExtractorLinkType.M3U8) {
+                                    this.referer = origin
+                                    this.quality = qualityValue(q)
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
         for (t in translators) {
             val form = mutableMapOf(
                 "id" to postId,
