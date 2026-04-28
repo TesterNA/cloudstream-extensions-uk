@@ -89,6 +89,11 @@ class RezkaUAProvider : MainAPI() {
         "initCDN(?:Movies|Series)Events\\(\\s*(\\d+)\\s*,\\s*(\\d+)\\s*,\\s*(\\d+)\\s*,\\s*(\\d+)\\s*,\\s*(\\d+)"
             .toRegex()
 
+    // Captures the streams JSON value embedded directly in initCDN(Movies|Series)Events(...) call
+    private val inlineStreamsRegex =
+        "initCDN(?:Movies|Series)Events\\([^)]*?\"streams\":\"([^\"]+)\""
+            .toRegex()
+
     private fun parseTranslators(document: Document): List<Translator> {
         val list = document.select("#translators-list .b-translator__item, .b-translators__list .b-translator__item")
             .map {
@@ -215,10 +220,34 @@ class RezkaUAProvider : MainAPI() {
         val kind = parts[1]
         val pageUrl = parts.last()
 
+        // Use page URL's own origin so AJAX session matches the page's session/cookies/favs.
+        val origin = "https?://[^/]+".toRegex().find(pageUrl)?.value ?: mainUrl
+
         val document = app.get(pageUrl).document
+        val pageHtml = document.html()
         val favs = document.selectFirst("#ctrl_favs")?.attr("value").orEmpty()
         val translators = parseTranslators(document)
         if (translators.isEmpty()) return false
+
+        // Active translator's streams are embedded inline in initCDN(...) call. For movies,
+        // extract them directly — guarantees links even if AJAX path fails. For series this
+        // is the active s/e shown by default.
+        val activeName = document.selectFirst(".b-translator__item.active")?.let {
+            it.attr("title").ifBlank { it.text() }.trim()
+        } ?: translators.firstOrNull()?.name.orEmpty()
+        val inline = inlineStreamsRegex.find(pageHtml)?.groupValues?.get(1)
+            ?.replace("\\/", "/")
+        if (inline != null && kind == "movie") {
+            parseStreams(inline).forEach { (q, link) ->
+                val src = "$activeName ${q}p".trim()
+                callback(
+                    newExtractorLink(link, src, link, ExtractorLinkType.M3U8) {
+                        this.referer = origin
+                        this.quality = qualityValue(q)
+                    }
+                )
+            }
+        }
 
         for (t in translators) {
             val form = mutableMapOf(
@@ -239,7 +268,7 @@ class RezkaUAProvider : MainAPI() {
 
             val resp = try {
                 app.post(
-                    "$mainUrl/ajax/get_cdn_series/?t=${System.currentTimeMillis()}",
+                    "$origin/ajax/get_cdn_series/?t=${System.currentTimeMillis()}",
                     data = form,
                     headers = mapOf(
                         "X-Requested-With" to "XMLHttpRequest",
@@ -256,15 +285,15 @@ class RezkaUAProvider : MainAPI() {
             val streams = "\"url\":\"([^\"]+)\"".toRegex().find(resp)?.groupValues?.get(1)
                 ?.replace("\\/", "/") ?: continue
 
+            // Skip duplicates with the inline emit above (movie + active translator)
+            val isActiveInline = (kind == "movie" && t.name == activeName)
+            if (isActiveInline) continue
             parseStreams(streams).forEach { (q, link) ->
+                val qpStr = if (q != Qualities.Unknown.value) "${q}p" else ""
+                val src = "${t.name} $qpStr".trim()
                 callback(
-                    newExtractorLink(
-                        source = "$name (${t.name})",
-                        name = "$name (${t.name}) ${q}p",
-                        url = link,
-                        type = ExtractorLinkType.M3U8,
-                    ) {
-                        this.referer = mainUrl
+                    newExtractorLink(link, src, link, ExtractorLinkType.M3U8) {
+                        this.referer = origin
                         this.quality = qualityValue(q)
                     }
                 )
