@@ -159,16 +159,18 @@ class RezkaUAProvider : MainAPI() {
 
     private fun parseStreams(streams: String): List<Pair<Int, String>> {
         // Format: [QUALITY]url1 or url2[, [QUALITY2]...]
+        // Each url is a HLS-gateway URL ending with .mp4:hls:manifest.m3u8 — use as-is.
         val out = mutableListOf<Pair<Int, String>>()
         val re = "\\[([^\\]]+)\\]([^,\\[]+)".toRegex()
         re.findAll(streams).forEach { m ->
             val q = m.groupValues[1]
             val urls = m.groupValues[2].split(" or ")
-            val pick = urls.firstOrNull { ".mp4" in it }?.trim() ?: return@forEach
-            // Strip the :hls:manifest.m3u8 suffix to get direct mp4
-            val mp4 = pick.substringBefore(".mp4") + ".mp4"
+            // Prefer manifest.m3u8 link, fallback to first url
+            val pick = (urls.firstOrNull { it.endsWith("manifest.m3u8") }
+                ?: urls.firstOrNull())?.trim().orEmpty()
+            if (pick.isEmpty()) return@forEach
             val qNum = q.filter { it.isDigit() }.toIntOrNull() ?: Qualities.Unknown.value
-            out += qNum to mp4
+            out += qNum to pick
         }
         return out
     }
@@ -237,7 +239,7 @@ class RezkaUAProvider : MainAPI() {
                         source = name,
                         name = "$name ($translatorName)",
                         url = link,
-                        type = ExtractorLinkType.VIDEO,
+                        type = ExtractorLinkType.M3U8,
                     ) {
                         this.referer = mainUrl
                         this.quality = qualityValue(q)
