@@ -21,14 +21,16 @@ class UakinoProvider : MainAPI() {
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries, TvType.Anime)
 
     // Sections
+    // `/online/` lists what users are actively watching — fresher and more relevant ordering
+    // than the default "newest upload" sort.
     override val mainPage =
         mainPageOf(
-            "$mainUrl/filmy/page/" to "Фільми",
-            "$mainUrl/seriesss/page/" to "Серіали",
-            "$mainUrl/seriesss/doramy/page/" to "Дорами",
-            "$mainUrl/animeukr/page/" to "Аніме",
-            "$mainUrl/cartoon/page/" to "Мультфільми",
-            "$mainUrl/cartoon/cartoonseries/page/" to "Мультсеріали",
+            "$mainUrl/filmy/online/page/" to "Фільми",
+            "$mainUrl/seriesss/online/page/" to "Серіали",
+            "$mainUrl/seriesss/doramy/online/page/" to "Дорами",
+            "$mainUrl/animeukr/online/page/" to "Аніме",
+            "$mainUrl/cartoon/online/page/" to "Мультфільми",
+            "$mainUrl/cartoon/cartoonseries/online/page/" to "Мультсеріали",
         )
 
     val blackUrls = "(/news/)|(/franchise/)"
