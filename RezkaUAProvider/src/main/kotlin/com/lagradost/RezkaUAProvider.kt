@@ -256,6 +256,25 @@ class RezkaUAProvider : MainAPI() {
     /** Captures the most informative failure reason as we walk through code paths. */
     private class ErrorTrack(var msg: String = "no path matched") {
         fun set(m: String) { msg = m }
+        private val perTranslator = mutableListOf<String>()
+        fun addT(s: String) { if (perTranslator.size < 5) perTranslator.add(s) }
+        fun summary(): String =
+            if (perTranslator.isNotEmpty()) {
+                perTranslator.joinToString("; ") + (if (perTranslator.size >= 5) "; +more" else "")
+            } else msg
+    }
+
+    /** First successfully emitted real stream URL+quality — reused as a diagnostic source target
+     *  so Cloudstream cannot drop it for host validation reasons. */
+    private class RealLinkProbe {
+        var url: String? = null
+        var quality: Int = Qualities.Unknown.value
+        fun capture(link: ExtractorLink) {
+            if (url == null) {
+                url = link.url
+                quality = link.quality
+            }
+        }
     }
 
     override suspend fun loadLinks(
@@ -268,31 +287,38 @@ class RezkaUAProvider : MainAPI() {
         //   * a page URL (movie page or episode-specific page with inline streams)
         //   * "rezka-ajax|<postId>|<season>|<episode>|<seriesUrl>" — for <li>-only series.
         val err = ErrorTrack()
+        val probe = RealLinkProbe()
+        // Wrap the user callback so we can record the first real link URL/quality and reuse it
+        // for the diagnostic source (CS won't filter by host since it's identical to a working one).
+        val capturingCallback: (ExtractorLink) -> Unit = { link ->
+            probe.capture(link)
+            callback(link)
+        }
         var emitted = 0
         try {
             emitted = if (data.startsWith("rezka-ajax|")) {
-                loadLinksViaAjax(data, err) { callback(it) }
+                loadLinksViaAjax(data, err, capturingCallback)
             } else {
-                loadLinksFromPage(data, err) { callback(it) }
+                loadLinksFromPage(data, err, capturingCallback)
             }
         } catch (e: Throwable) {
             err.set("${e::class.simpleName}: ${e.message?.take(140) ?: "(no msg)"}")
         }
         if (emitted == 0) {
-            // Single visible error source so user on a TV at least knows what failed.
+            // No real streams at all. Use a real-looking URL on the rezka host so CS won't drop it.
+            val origin = "https?://[^/]+".toRegex().find(data)?.value ?: mainUrl
+            val diagUrl = "$origin/cs-debug/no-streams-${System.currentTimeMillis()}.m3u8"
             callback(
                 newExtractorLink(
-                    "https://example.invalid/no-streams",
-                    "RezkaUA: no streams (${err.msg})",
-                    "https://example.invalid/no-streams",
+                    diagUrl,
+                    "RezkaUA: no streams (${err.summary()})",
+                    diagUrl,
                     ExtractorLinkType.M3U8,
                 ) {
-                    this.referer = mainUrl
+                    this.referer = origin
                     this.quality = Qualities.Unknown.value
                 }
             )
-            // Return true — we did emit (the diagnostic) so CS shows it instead of hiding the source.
-            return true
         }
         return true
     }
@@ -308,6 +334,12 @@ class RezkaUAProvider : MainAPI() {
         err: ErrorTrack,
         emit: (ExtractorLink) -> Unit,
     ): Int {
+        // Local probe so we can reuse the first real emitted URL for the diagnostic source.
+        val probe = RealLinkProbe()
+        val emitProbed: (ExtractorLink) -> Unit = { link ->
+            probe.capture(link)
+            emit(link)
+        }
         val origin = "https?://[^/]+".toRegex().find(pageUrl)?.value ?: mainUrl
         val pageHtml = try {
             app.get(pageUrl, headers = baseHeaders).text
@@ -337,7 +369,7 @@ class RezkaUAProvider : MainAPI() {
                 err.set("parseStreams found 0 quality entries in inline streams")
             }
             parsed.forEach { (q, link) ->
-                emit(buildLink(link, "$activeName ${q}p".trim(), origin, q))
+                emitProbed(buildLink(link, "$activeName ${q}p".trim(), origin, q))
                 activeEmitted++
             }
         }
@@ -364,7 +396,7 @@ class RezkaUAProvider : MainAPI() {
                         translatorPageUrl = tHref,
                         season = season, episode = episode,
                         translator = t, origin = origin,
-                        err = err, emit = emit,
+                        err = err, emit = emitProbed,
                     )
                 } else {
                     // <li> translator (no href) → AJAX fallback.
@@ -372,24 +404,29 @@ class RezkaUAProvider : MainAPI() {
                         origin = origin, referer = pageUrl,
                         postId = postId, translator = t,
                         season = season, episode = episode,
-                        favs = favs, err = err, emit = emit,
+                        favs = favs, err = err, emit = emitProbed,
                     )
                 }
             }
         }
 
-        // 3) If active worked but no extras for a multi-translator series, surface that as a
-        //    single visible diagnostic so the user sees WHY only one voice is available.
+        // 3) If active worked but no extras for a multi-translator series, emit a single visible
+        //    diagnostic. Reuse first real active stream URL (CS host-validation can't filter it
+        //    because it equals a working source). Falls back to host-prefixed fake `.m3u8` if
+        //    probe is empty.
         if (activeEmitted > 0 && translatorsCount > 0 && extrasEmitted == 0) {
+            val realUrl = probe.url
+            val realQuality = if (realUrl != null) probe.quality else Qualities.Unknown.value
+            val diagUrl = realUrl ?: "$origin/cs-debug/only-active-${System.currentTimeMillis()}.m3u8"
             emit(
                 newExtractorLink(
-                    "https://example.invalid/no-extras",
-                    "RezkaUA: only active translator (${err.msg})",
-                    "https://example.invalid/no-extras",
+                    diagUrl,
+                    "RezkaUA DEBUG: only active translator (${err.summary()})",
+                    diagUrl,
                     ExtractorLinkType.M3U8,
                 ) {
                     this.referer = origin
-                    this.quality = Qualities.Unknown.value
+                    this.quality = realQuality
                 }
             )
         }
@@ -414,16 +451,16 @@ class RezkaUAProvider : MainAPI() {
         val html = try {
             app.get(epUrl, headers = baseHeaders).text
         } catch (e: Throwable) {
-            err.set("ep synth ${translator.name}: ${e::class.simpleName} ${e.message?.take(80)}")
+            err.addT("tid=${translator.id}: GET ${e::class.simpleName} ${e.message?.take(40) ?: ""}")
             return 0
         }
         if (html.isBlank()) {
-            err.set("ep synth ${translator.name}: empty body for $epUrl")
+            err.addT("tid=${translator.id}: empty body")
             return 0
         }
         val raw = inlineStreamsRegex.find(html)?.groupValues?.get(1)
         if (raw == null) {
-            err.set("ep synth ${translator.name}: inline streams not found")
+            err.addT("tid=${translator.id}: no inline (size=${html.length})")
             return 0
         }
         val streams = raw.replace("\\/", "/")
@@ -432,7 +469,7 @@ class RezkaUAProvider : MainAPI() {
             emit(buildLink(link, "${translator.name} ${q}p".trim(), origin, q))
             n++
         }
-        if (n == 0) err.set("ep synth ${translator.name}: 0 quality entries parsed")
+        if (n == 0) err.addT("tid=${translator.id}: 0 qualities parsed")
         return n
     }
 
@@ -468,6 +505,26 @@ class RezkaUAProvider : MainAPI() {
         }
 
         var emitted = 0
+
+        // 0) Inline fallback: if the requested season/episode matches what's already rendered on
+        //    the series page (initCDNSeriesEvents args), emit those streams immediately. Gives us
+        //    at least one playable source even if AJAX fails downstream.
+        seriesInitRegex.find(pageHtml)?.let { m ->
+            val inlineActiveId = m.groupValues[2]
+            val inlineSeason = m.groupValues[3]
+            val inlineEpisode = m.groupValues[4]
+            if (inlineSeason == season && inlineEpisode == episode) {
+                val inlineRaw = inlineStreamsRegex.find(pageHtml)?.groupValues?.get(1)
+                if (inlineRaw != null) {
+                    val activeName = translators.firstOrNull { it.id == inlineActiveId }?.name ?: name
+                    parseStreams(inlineRaw.replace("\\/", "/")).forEach { (q, link) ->
+                        emit(buildLink(link, "$activeName ${q}p".trim(), origin, q))
+                        emitted++
+                    }
+                }
+            }
+        }
+
         for (t in translators) {
             emitted += ajaxStreams(
                 origin = origin, referer = seriesUrl,
@@ -521,23 +578,22 @@ class RezkaUAProvider : MainAPI() {
                 headers = ajaxHeaders(origin, referer),
             ).text
         } catch (e: Exception) {
-            err.set("AJAX ${e::class.simpleName} for tid=${translator.id}: ${e.message?.take(80)}")
+            err.addT("tid=${translator.id}: AJAX ${e::class.simpleName} ${e.message?.take(40) ?: ""}")
             return 0
         }
         if (!resp.contains("\"success\":true")) {
-            // Try to surface the server's own message for the most recent failed translator.
-            val msg = "\"message\":\"([^\"]{0,140})\"".toRegex().find(resp)?.groupValues?.get(1)
+            val msg = "\"message\":\"([^\"]{0,80})\"".toRegex().find(resp)?.groupValues?.get(1)
                 ?.replace("\\/", "/")
                 ?.let { it.ifBlank { "(empty)" } }
-                ?: "no \"success\":true in body (len=${resp.length})"
-            err.set("AJAX tid=${translator.id} -> $msg")
+                ?: "no success (len=${resp.length})"
+            err.addT("tid=${translator.id}: $msg")
             return 0
         }
 
         val streams = "\"url\":\"([^\"]+)\"".toRegex().find(resp)?.groupValues?.get(1)
             ?.replace("\\/", "/")
         if (streams == null) {
-            err.set("AJAX tid=${translator.id} success but no url field")
+            err.addT("tid=${translator.id}: success but no url field")
             return 0
         }
 
@@ -546,7 +602,7 @@ class RezkaUAProvider : MainAPI() {
             emit(buildLink(link, "${translator.name} ${q}p".trim(), origin, q))
             n++
         }
-        if (n == 0) err.set("AJAX tid=${translator.id} url field had 0 quality entries")
+        if (n == 0) err.addT("tid=${translator.id}: 0 quality entries")
         return n
     }
 
