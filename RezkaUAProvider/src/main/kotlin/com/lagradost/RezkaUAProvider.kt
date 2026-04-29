@@ -101,6 +101,9 @@ class RezkaUAProvider : MainAPI() {
         val camrip: String,
         val ads: String,
         val director: String,
+        /** Some series render translator items as `<a href="...html">` pointing to a translator page.
+         *  When present, we can synthesize per-episode URLs without AJAX. Null for `<li>` translators. */
+        val href: String? = null,
     )
 
     // Movie shape: initCDNMoviesEvents(post_id, translator_id, camrip, ads, director, host, ...)
@@ -127,6 +130,7 @@ class RezkaUAProvider : MainAPI() {
                     camrip = it.attr("data-camrip").ifBlank { "0" },
                     ads = it.attr("data-ads").ifBlank { "0" },
                     director = it.attr("data-director").ifBlank { "0" },
+                    href = it.attr("href").ifBlank { null },
                 )
             }
             .filter { it.id.isNotBlank() }
@@ -295,8 +299,9 @@ class RezkaUAProvider : MainAPI() {
 
     /**
      * Fetches the page at [pageUrl], emits the active translator's inline streams, and — if it's
-     * a series episode page (initCDNSeriesEvents) — also calls AJAX for every other translator
-     * advertised on the page so they appear in the source picker.
+     * a series episode page (initCDNSeriesEvents) — also fans out to every other translator
+     * advertised on the page so they appear in the source picker. Uses URL synthesis when the
+     * translator item has an `<a href>`; falls back to AJAX otherwise.
      */
     private suspend fun loadLinksFromPage(
         pageUrl: String,
@@ -320,7 +325,7 @@ class RezkaUAProvider : MainAPI() {
             it.attr("title").ifBlank { it.text() }.trim()
         } ?: parseTranslators(document, pageHtml).firstOrNull()?.name ?: name
 
-        var emitted = 0
+        var activeEmitted = 0
         // 1) Active translator from inline initCDN(...) — fast and reliable.
         val inlineRaw = inlineStreamsRegex.find(pageHtml)?.groupValues?.get(1)
         if (inlineRaw == null) {
@@ -333,31 +338,102 @@ class RezkaUAProvider : MainAPI() {
             }
             parsed.forEach { (q, link) ->
                 emit(buildLink(link, "$activeName ${q}p".trim(), origin, q))
-                emitted++
+                activeEmitted++
             }
         }
 
-        // 2) If this is a SERIES episode page, fan out to other translators via AJAX.
+        // 2) If this is a SERIES episode page, fan out to other translators.
         val seriesMatch = seriesInitRegex.find(pageHtml)
+        var extrasEmitted = 0
+        var translatorsCount = 0
         if (seriesMatch != null) {
             val postId = seriesMatch.groupValues[1]
             val activeId = seriesMatch.groupValues[2]
             val season = seriesMatch.groupValues[3]
             val episode = seriesMatch.groupValues[4]
             val favs = document.selectFirst("#ctrl_favs")?.attr("value").orEmpty()
-            val translators = parseTranslators(document, pageHtml)
-                .filter { it.id != activeId }    // skip active — already emitted from inline
+            val others = parseTranslators(document, pageHtml)
+                .filter { it.id != activeId }   // skip active — already emitted from inline
+            translatorsCount = others.size
 
-            for (t in translators) {
-                emitted += ajaxStreams(
-                    origin = origin, referer = pageUrl,
-                    postId = postId, translator = t,
-                    season = season, episode = episode,
-                    favs = favs, err = err, emit = emit,
-                )
+            for (t in others) {
+                val tHref = t.href
+                if (!tHref.isNullOrBlank()) {
+                    // <a href> translator → synthesize per-episode URL, fetch, parse inline.
+                    extrasEmitted += synthesizedTranslatorEpisode(
+                        translatorPageUrl = tHref,
+                        season = season, episode = episode,
+                        translator = t, origin = origin,
+                        err = err, emit = emit,
+                    )
+                } else {
+                    // <li> translator (no href) → AJAX fallback.
+                    extrasEmitted += ajaxStreams(
+                        origin = origin, referer = pageUrl,
+                        postId = postId, translator = t,
+                        season = season, episode = episode,
+                        favs = favs, err = err, emit = emit,
+                    )
+                }
             }
         }
-        return emitted
+
+        // 3) If active worked but no extras for a multi-translator series, surface that as a
+        //    single visible diagnostic so the user sees WHY only one voice is available.
+        if (activeEmitted > 0 && translatorsCount > 0 && extrasEmitted == 0) {
+            emit(
+                newExtractorLink(
+                    "https://example.invalid/no-extras",
+                    "RezkaUA: only active translator (${err.msg})",
+                    "https://example.invalid/no-extras",
+                    ExtractorLinkType.M3U8,
+                ) {
+                    this.referer = origin
+                    this.quality = Qualities.Unknown.value
+                }
+            )
+        }
+        return activeEmitted + extrasEmitted
+    }
+
+    /**
+     * Build a per-episode URL by appending `/$season-season/$episode-episode.html` to the translator
+     * landing page URL, fetch it, and emit inline streams. Replaces AJAX for `<a href>` translators.
+     */
+    private suspend fun synthesizedTranslatorEpisode(
+        translatorPageUrl: String,
+        season: String,
+        episode: String,
+        translator: Translator,
+        origin: String,
+        err: ErrorTrack,
+        emit: (ExtractorLink) -> Unit,
+    ): Int {
+        val sameOrigin = translatorPageUrl.replace("https?://[^/]+".toRegex(), origin)
+        val epUrl = sameOrigin.removeSuffix(".html") + "/$season-season/$episode-episode.html"
+        val html = try {
+            app.get(epUrl, headers = baseHeaders).text
+        } catch (e: Throwable) {
+            err.set("ep synth ${translator.name}: ${e::class.simpleName} ${e.message?.take(80)}")
+            return 0
+        }
+        if (html.isBlank()) {
+            err.set("ep synth ${translator.name}: empty body for $epUrl")
+            return 0
+        }
+        val raw = inlineStreamsRegex.find(html)?.groupValues?.get(1)
+        if (raw == null) {
+            err.set("ep synth ${translator.name}: inline streams not found")
+            return 0
+        }
+        val streams = raw.replace("\\/", "/")
+        var n = 0
+        parseStreams(streams).forEach { (q, link) ->
+            emit(buildLink(link, "${translator.name} ${q}p".trim(), origin, q))
+            n++
+        }
+        if (n == 0) err.set("ep synth ${translator.name}: 0 quality entries parsed")
+        return n
     }
 
     /**
@@ -420,12 +496,16 @@ class RezkaUAProvider : MainAPI() {
         val form = mutableMapOf(
             "id" to postId,
             "translator_id" to translator.id,
-            // Always send flags (browser does this); defaults to "0" already in Translator model.
-            "is_camrip" to translator.camrip,
-            "is_ads" to translator.ads,
-            "is_director" to translator.director,
             "favs" to favs,
         )
+        // Only include camrip/ads/director when translator actually exposes a non-default value.
+        // Browser captures show <li> translators omit them entirely; matching that traffic shape
+        // is safer than always sending zeros.
+        if (translator.camrip != "0" || translator.ads != "0" || translator.director != "0") {
+            form["is_camrip"] = translator.camrip
+            form["is_ads"] = translator.ads
+            form["is_director"] = translator.director
+        }
         if (season != null && episode != null) {
             form["season"] = season
             form["episode"] = episode
