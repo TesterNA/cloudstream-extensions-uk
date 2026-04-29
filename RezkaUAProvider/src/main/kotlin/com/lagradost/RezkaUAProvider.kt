@@ -27,6 +27,24 @@ class RezkaUAProvider : MainAPI() {
 
     override var mainUrl = "https://rezka-ua.in"
     override var name = "HDRezka UA"
+
+    private val USER_AGENT =
+        "Mozilla/5.0 (X11; Linux x86_64; rv:122.0) Gecko/20100101 Firefox/122.0"
+    private val baseHeaders = mapOf(
+        "User-Agent" to USER_AGENT,
+        "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language" to "ru-RU,ru;q=0.9,uk;q=0.8",
+    )
+
+    private fun ajaxHeaders(origin: String, referer: String) = mapOf(
+        "User-Agent" to USER_AGENT,
+        "X-Requested-With" to "XMLHttpRequest",
+        "Accept" to "application/json, text/javascript, */*; q=0.01",
+        "Accept-Language" to "ru-RU,ru;q=0.9,uk;q=0.8",
+        "Origin" to origin,
+        "Referer" to referer,
+    )
+
     override val hasMainPage = true
     override var lang = "uk"
     override val hasQuickSearch = true
@@ -85,16 +103,22 @@ class RezkaUAProvider : MainAPI() {
         val director: String,
     )
 
-    private val initCdnRegex =
-        "initCDN(?:Movies|Series)Events\\(\\s*(\\d+)\\s*,\\s*(\\d+)\\s*,\\s*(\\d+)\\s*,\\s*(\\d+)\\s*,\\s*(\\d+)"
+    // Movie shape: initCDNMoviesEvents(post_id, translator_id, camrip, ads, director, host, ...)
+    private val movieInitRegex =
+        "initCDNMoviesEvents\\(\\s*(\\d+)\\s*,\\s*(\\d+)\\s*,\\s*(\\d+)\\s*,\\s*(\\d+)\\s*,\\s*(\\d+)"
             .toRegex()
 
-    // Captures the streams JSON value embedded directly in initCDN(Movies|Series)Events(...) call
+    // Series shape: initCDNSeriesEvents(post_id, translator_id, season, episode, false|true, host, ...)
+    private val seriesInitRegex =
+        "initCDNSeriesEvents\\(\\s*(\\d+)\\s*,\\s*(\\d+)\\s*,\\s*(\\d+)\\s*,\\s*(\\d+)\\s*,\\s*(?:false|true)"
+            .toRegex()
+
+    // Streams JSON value embedded inside the same initCDN(Movies|Series)Events(...) call.
     private val inlineStreamsRegex =
         "initCDN(?:Movies|Series)Events\\([^)]*?\"streams\":\"([^\"]+)\""
             .toRegex()
 
-    private fun parseTranslators(document: Document): List<Translator> {
+    private fun parseTranslators(document: Document, html: String): List<Translator> {
         val list = document.select("#translators-list .b-translator__item, .b-translators__list .b-translator__item")
             .map {
                 Translator(
@@ -109,18 +133,24 @@ class RezkaUAProvider : MainAPI() {
 
         if (list.isNotEmpty()) return list
 
-        // Single-translator page: no list rendered. Pull translator_id + flags from
-        // sof.tv.initCDN(Movies|Series)Events(post_id, translator_id, camrip, ads, director, ...)
-        val m = initCdnRegex.find(document.outerHtml()) ?: return emptyList()
-        return listOf(
-            Translator(
-                id = m.groupValues[2],
-                name = "Default",
-                camrip = m.groupValues[3],
-                ads = m.groupValues[4],
-                director = m.groupValues[5],
+        // No translator list rendered (single translator). Try movie-shape first, then series.
+        movieInitRegex.find(html)?.let { m ->
+            return listOf(
+                Translator(
+                    id = m.groupValues[2], name = "Default",
+                    camrip = m.groupValues[3], ads = m.groupValues[4], director = m.groupValues[5],
+                )
             )
-        )
+        }
+        seriesInitRegex.find(html)?.let { m ->
+            return listOf(
+                Translator(
+                    id = m.groupValues[2], name = "Default",
+                    camrip = "0", ads = "0", director = "0",
+                )
+            )
+        }
+        return emptyList()
     }
 
     override suspend fun load(url: String): LoadResponse {
@@ -149,7 +179,8 @@ class RezkaUAProvider : MainAPI() {
             ?: document.selectFirst(".b-translator__item")?.attr("data-id").orEmpty()
 
         if (!isSeries) {
-            return newMovieLoadResponse(title, url, TvType.Movie, "$postId|movie|$url") {
+            // For movies, `data` is the page URL itself.
+            return newMovieLoadResponse(title, url, TvType.Movie, url) {
                 this.posterUrl = poster
                 this.year = year
                 this.plot = description
@@ -159,14 +190,24 @@ class RezkaUAProvider : MainAPI() {
             }
         }
 
-        // Series: parse seasons + episodes from initial active translator block
+        // Series: each episode's page has its own initCDN call with inline streams.
+        // Use the episode URL directly as `data` — loadLinks just fetches and parses.
+        // For li-only series (no href), fall back to series URL + s/e marker handled by loadLinks via AJAX.
+        val pageOrigin = "https?://[^/]+".toRegex().find(url)?.value ?: mainUrl
         val episodes = document.select(".b-simple_episode__item").map {
             val s = it.attr("data-season_id").toIntOrNull() ?: 1
             val e = it.attr("data-episode_id").toIntOrNull() ?: 1
-            newEpisode("$postId|series|$s|$e|$url") {
+            val epHrefRaw = it.attr("href")
+            // If no per-ep URL, encode s+e+postId+seriesUrl so loadLinks can call AJAX.
+            // Force same-origin (page came in on .in but ep hrefs may point to .co).
+            val epHref = epHrefRaw.replace("https?://[^/]+".toRegex(), pageOrigin)
+            val dataStr = if (epHref.isNotBlank()) epHref
+                else "rezka-ajax|$postId|$s|$e|$url"
+            newEpisode(dataStr) {
                 this.name = it.text()
                 this.season = s
                 this.episode = e
+                this.data = dataStr
             }
         }
 
@@ -208,132 +249,230 @@ class RezkaUAProvider : MainAPI() {
         else -> Qualities.Unknown.value
     }
 
+    /** Captures the most informative failure reason as we walk through code paths. */
+    private class ErrorTrack(var msg: String = "no path matched") {
+        fun set(m: String) { msg = m }
+    }
+
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // data shape: "<postId>|movie|<url>"  OR  "<postId>|series|<season>|<episode>|<url>"
-        val parts = data.split("|")
-        val postId = parts[0]
-        val kind = parts[1]
-        val pageUrl = parts.last()
-
-        // Use page URL's own origin so AJAX session matches the page's session/cookies/favs.
-        val origin = "https?://[^/]+".toRegex().find(pageUrl)?.value ?: mainUrl
-
-        // Single fetch — read body once, then parse for both raw regex and Jsoup ops.
-        val pageHtml = app.get(pageUrl).text
-        val document = org.jsoup.Jsoup.parse(pageHtml, pageUrl)
-        val favs = document.selectFirst("#ctrl_favs")?.attr("value").orEmpty()
-        val translators = parseTranslators(document)
-        if (translators.isEmpty()) return false
-
-        // Active translator's streams are embedded inline in initCDN(...) call. For movies,
-        // extract them directly — guarantees links even if AJAX path fails. For series this
-        // is the active s/e shown by default.
-        val activeName = document.selectFirst(".b-translator__item.active")?.let {
-            it.attr("title").ifBlank { it.text() }.trim()
-        } ?: translators.firstOrNull()?.name.orEmpty()
-        val inline = inlineStreamsRegex.find(pageHtml)?.groupValues?.get(1)
-            ?.replace("\\/", "/")
-        if (inline != null && kind == "movie") {
-            parseStreams(inline).forEach { (q, link) ->
-                val src = "$activeName ${q}p".trim()
-                callback(
-                    newExtractorLink(link, src, link, ExtractorLinkType.M3U8) {
-                        this.referer = origin
-                        this.quality = qualityValue(q)
-                    }
-                )
-            }
-        }
-
-        // For series: also try episode-specific URL for active translator (its href is on the page).
-        // This is a reliable fallback if AJAX can't be reached from this client (cookie/session issues).
-        if (kind == "series") {
-            val s = parts[2]
-            val e = parts[3]
-            val epHref = document.select(".b-simple_episode__item")
-                .firstOrNull {
-                    it.attr("data-season_id") == s && it.attr("data-episode_id") == e
-                }
-                ?.attr("href")
-            if (!epHref.isNullOrBlank()) {
-                // Pages on .in still embed episode hrefs to .co (or vice versa). Force the
-                // episode URL onto the same origin we already loaded to keep session/cookies.
-                val sameOriginEp = epHref.replace("https?://[^/]+".toRegex(), origin)
-                runCatching {
-                    // Use raw response text — Jsoup's .html() may HTML-escape JSON inside <script>.
-                    val epHtml = app.get(sameOriginEp).text
-                    val epStreams = inlineStreamsRegex.find(epHtml)?.groupValues?.get(1)
-                        ?.replace("\\/", "/")
-                    if (epStreams != null) {
-                        parseStreams(epStreams).forEach { (q, link) ->
-                            val src = "$activeName ${q}p".trim()
-                            callback(
-                                newExtractorLink(link, src, link, ExtractorLinkType.M3U8) {
-                                    this.referer = origin
-                                    this.quality = qualityValue(q)
-                                }
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
-        for (t in translators) {
-            val form = mutableMapOf(
-                "id" to postId,
-                "translator_id" to t.id,
-                "is_camrip" to t.camrip,
-                "is_ads" to t.ads,
-                "is_director" to t.director,
-                "favs" to favs,
-            )
-            if (kind == "series") {
-                form["season"] = parts[2]
-                form["episode"] = parts[3]
-                form["action"] = "get_stream"
+        // `data` is either:
+        //   * a page URL (movie page or episode-specific page with inline streams)
+        //   * "rezka-ajax|<postId>|<season>|<episode>|<seriesUrl>" — for <li>-only series.
+        val err = ErrorTrack()
+        var emitted = 0
+        try {
+            emitted = if (data.startsWith("rezka-ajax|")) {
+                loadLinksViaAjax(data, err) { callback(it) }
             } else {
-                form["action"] = "get_movie"
+                loadLinksFromPage(data, err) { callback(it) }
             }
-
-            val resp = try {
-                app.post(
-                    "$origin/ajax/get_cdn_series/?t=${System.currentTimeMillis()}",
-                    data = form,
-                    headers = mapOf(
-                        "X-Requested-With" to "XMLHttpRequest",
-                        "Referer" to pageUrl,
-                    ),
-                ).text
-            } catch (_: Exception) {
-                continue
-            }
-
-            // success may be true or false; only parse url if success
-            if (!resp.contains("\"success\":true")) continue
-
-            val streams = "\"url\":\"([^\"]+)\"".toRegex().find(resp)?.groupValues?.get(1)
-                ?.replace("\\/", "/") ?: continue
-
-            // Skip duplicates with the inline emit above (movie + active translator)
-            val isActiveInline = (kind == "movie" && t.name == activeName)
-            if (isActiveInline) continue
-            parseStreams(streams).forEach { (q, link) ->
-                val qpStr = if (q != Qualities.Unknown.value) "${q}p" else ""
-                val src = "${t.name} $qpStr".trim()
-                callback(
-                    newExtractorLink(link, src, link, ExtractorLinkType.M3U8) {
-                        this.referer = origin
-                        this.quality = qualityValue(q)
-                    }
-                )
-            }
+        } catch (e: Throwable) {
+            err.set("${e::class.simpleName}: ${e.message?.take(140) ?: "(no msg)"}")
+        }
+        if (emitted == 0) {
+            // Single visible error source so user on a TV at least knows what failed.
+            callback(
+                newExtractorLink(
+                    "https://example.invalid/no-streams",
+                    "RezkaUA: no streams (${err.msg})",
+                    "https://example.invalid/no-streams",
+                    ExtractorLinkType.M3U8,
+                ) {
+                    this.referer = mainUrl
+                    this.quality = Qualities.Unknown.value
+                }
+            )
+            // Return true — we did emit (the diagnostic) so CS shows it instead of hiding the source.
+            return true
         }
         return true
     }
+
+    /**
+     * Fetches the page at [pageUrl], emits the active translator's inline streams, and — if it's
+     * a series episode page (initCDNSeriesEvents) — also calls AJAX for every other translator
+     * advertised on the page so they appear in the source picker.
+     */
+    private suspend fun loadLinksFromPage(
+        pageUrl: String,
+        err: ErrorTrack,
+        emit: (ExtractorLink) -> Unit,
+    ): Int {
+        val origin = "https?://[^/]+".toRegex().find(pageUrl)?.value ?: mainUrl
+        val pageHtml = try {
+            app.get(pageUrl, headers = baseHeaders).text
+        } catch (e: Throwable) {
+            err.set("page GET ${e::class.simpleName}: ${e.message?.take(80)}")
+            return 0
+        }
+        if (pageHtml.isBlank()) {
+            err.set("page GET returned empty body")
+            return 0
+        }
+        val document = org.jsoup.Jsoup.parse(pageHtml, pageUrl)
+
+        val activeName = document.selectFirst(".b-translator__item.active")?.let {
+            it.attr("title").ifBlank { it.text() }.trim()
+        } ?: parseTranslators(document, pageHtml).firstOrNull()?.name ?: name
+
+        var emitted = 0
+        // 1) Active translator from inline initCDN(...) — fast and reliable.
+        val inlineRaw = inlineStreamsRegex.find(pageHtml)?.groupValues?.get(1)
+        if (inlineRaw == null) {
+            err.set("inline initCDN streams regex did not match (page len=${pageHtml.length})")
+        } else {
+            val streams = inlineRaw.replace("\\/", "/")
+            val parsed = parseStreams(streams)
+            if (parsed.isEmpty()) {
+                err.set("parseStreams found 0 quality entries in inline streams")
+            }
+            parsed.forEach { (q, link) ->
+                emit(buildLink(link, "$activeName ${q}p".trim(), origin, q))
+                emitted++
+            }
+        }
+
+        // 2) If this is a SERIES episode page, fan out to other translators via AJAX.
+        val seriesMatch = seriesInitRegex.find(pageHtml)
+        if (seriesMatch != null) {
+            val postId = seriesMatch.groupValues[1]
+            val activeId = seriesMatch.groupValues[2]
+            val season = seriesMatch.groupValues[3]
+            val episode = seriesMatch.groupValues[4]
+            val favs = document.selectFirst("#ctrl_favs")?.attr("value").orEmpty()
+            val translators = parseTranslators(document, pageHtml)
+                .filter { it.id != activeId }    // skip active — already emitted from inline
+
+            for (t in translators) {
+                emitted += ajaxStreams(
+                    origin = origin, referer = pageUrl,
+                    postId = postId, translator = t,
+                    season = season, episode = episode,
+                    favs = favs, err = err, emit = emit,
+                )
+            }
+        }
+        return emitted
+    }
+
+    /**
+     * AJAX-only path used for `<li>`-rendered series episodes (no per-episode URL).
+     * `data` shape: `rezka-ajax|<postId>|<season>|<episode>|<seriesUrl>`
+     */
+    private suspend fun loadLinksViaAjax(
+        data: String,
+        err: ErrorTrack,
+        emit: (ExtractorLink) -> Unit,
+    ): Int {
+        val parts = data.split("|")
+        val postId = parts[1]
+        val season = parts[2]
+        val episode = parts[3]
+        val seriesUrl = parts.last()
+        val origin = "https?://[^/]+".toRegex().find(seriesUrl)?.value ?: mainUrl
+
+        val pageHtml = try {
+            app.get(seriesUrl, headers = baseHeaders).text
+        } catch (e: Throwable) {
+            err.set("series GET ${e::class.simpleName}: ${e.message?.take(80)}")
+            return 0
+        }
+        val document = org.jsoup.Jsoup.parse(pageHtml, seriesUrl)
+        val favs = document.selectFirst("#ctrl_favs")?.attr("value").orEmpty()
+        if (favs.isBlank()) err.set("ctrl_favs missing on series page (size=${pageHtml.length})")
+        val translators = parseTranslators(document, pageHtml)
+        if (translators.isEmpty()) {
+            err.set("translator list empty + initCDN regex didn't match on series page")
+            return 0
+        }
+
+        var emitted = 0
+        for (t in translators) {
+            emitted += ajaxStreams(
+                origin = origin, referer = seriesUrl,
+                postId = postId, translator = t,
+                season = season, episode = episode,
+                favs = favs, err = err, emit = emit,
+            )
+        }
+        if (emitted == 0 && err.msg == "no path matched") {
+            err.set("AJAX returned 0 streams across ${translators.size} translators")
+        }
+        return emitted
+    }
+
+    private suspend fun ajaxStreams(
+        origin: String,
+        referer: String,
+        postId: String,
+        translator: Translator,
+        season: String?,
+        episode: String?,
+        favs: String,
+        err: ErrorTrack,
+        emit: (ExtractorLink) -> Unit,
+    ): Int {
+        val form = mutableMapOf(
+            "id" to postId,
+            "translator_id" to translator.id,
+            // Always send flags (browser does this); defaults to "0" already in Translator model.
+            "is_camrip" to translator.camrip,
+            "is_ads" to translator.ads,
+            "is_director" to translator.director,
+            "favs" to favs,
+        )
+        if (season != null && episode != null) {
+            form["season"] = season
+            form["episode"] = episode
+            form["action"] = "get_stream"
+        } else {
+            form["action"] = "get_movie"
+        }
+
+        val resp = try {
+            app.post(
+                "$origin/ajax/get_cdn_series/?t=${System.currentTimeMillis()}",
+                data = form,
+                headers = ajaxHeaders(origin, referer),
+            ).text
+        } catch (e: Exception) {
+            err.set("AJAX ${e::class.simpleName} for tid=${translator.id}: ${e.message?.take(80)}")
+            return 0
+        }
+        if (!resp.contains("\"success\":true")) {
+            // Try to surface the server's own message for the most recent failed translator.
+            val msg = "\"message\":\"([^\"]{0,140})\"".toRegex().find(resp)?.groupValues?.get(1)
+                ?.replace("\\/", "/")
+                ?.let { it.ifBlank { "(empty)" } }
+                ?: "no \"success\":true in body (len=${resp.length})"
+            err.set("AJAX tid=${translator.id} -> $msg")
+            return 0
+        }
+
+        val streams = "\"url\":\"([^\"]+)\"".toRegex().find(resp)?.groupValues?.get(1)
+            ?.replace("\\/", "/")
+        if (streams == null) {
+            err.set("AJAX tid=${translator.id} success but no url field")
+            return 0
+        }
+
+        var n = 0
+        parseStreams(streams).forEach { (q, link) ->
+            emit(buildLink(link, "${translator.name} ${q}p".trim(), origin, q))
+            n++
+        }
+        if (n == 0) err.set("AJAX tid=${translator.id} url field had 0 quality entries")
+        return n
+    }
+
+    private suspend fun buildLink(url: String, sourceName: String, origin: String, q: Int): ExtractorLink =
+        newExtractorLink(url, sourceName, url, ExtractorLinkType.M3U8) {
+            this.referer = origin
+            this.quality = qualityValue(q)
+        }
 }
