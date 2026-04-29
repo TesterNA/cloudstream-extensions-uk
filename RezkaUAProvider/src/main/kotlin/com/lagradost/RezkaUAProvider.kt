@@ -104,7 +104,13 @@ class RezkaUAProvider : MainAPI() {
         /** Some series render translator items as `<a href="...html">` pointing to a translator page.
          *  When present, we can synthesize per-episode URLs without AJAX. Null for `<li>` translators. */
         val href: String? = null,
-    )
+        /** True when site rendered a Ukrainian flag (`flags/ua.png`) inside the translator item.
+         *  Used to prefix `[UA]` in the source picker — CS UI doesn't render flag images. */
+        val isUkrainian: Boolean = false,
+    ) {
+        /** Display name with `[UA]` prefix for Ukrainian translators. */
+        val displayName: String get() = if (isUkrainian) "[UA] $name" else name
+    }
 
     // Movie shape: initCDNMoviesEvents(post_id, translator_id, camrip, ads, director, host, ...)
     private val movieInitRegex =
@@ -131,6 +137,7 @@ class RezkaUAProvider : MainAPI() {
                     ads = it.attr("data-ads").ifBlank { "0" },
                     director = it.attr("data-director").ifBlank { "0" },
                     href = it.attr("href").ifBlank { null },
+                    isUkrainian = it.select("img[src*=flags/ua.png]").isNotEmpty(),
                 )
             }
             .filter { it.id.isNotBlank() }
@@ -353,9 +360,12 @@ class RezkaUAProvider : MainAPI() {
         }
         val document = org.jsoup.Jsoup.parse(pageHtml, pageUrl)
 
-        val activeName = document.selectFirst(".b-translator__item.active")?.let {
-            it.attr("title").ifBlank { it.text() }.trim()
-        } ?: parseTranslators(document, pageHtml).firstOrNull()?.name ?: name
+        // Compute display name with [UA] prefix when the active translator has a UA flag.
+        val activeName = document.selectFirst(".b-translator__item.active")?.let { el ->
+            val raw = el.attr("title").ifBlank { el.text() }.trim()
+            val isUa = el.select("img[src*=flags/ua.png]").isNotEmpty()
+            if (isUa) "[UA] $raw" else raw
+        } ?: parseTranslators(document, pageHtml).firstOrNull()?.displayName ?: name
 
         var activeEmitted = 0
         // 1) Active translator from inline initCDN(...) — fast and reliable.
@@ -466,7 +476,7 @@ class RezkaUAProvider : MainAPI() {
         val streams = raw.replace("\\/", "/")
         var n = 0
         parseStreams(streams).forEach { (q, link) ->
-            emit(buildLink(link, "${translator.name} ${q}p".trim(), origin, q))
+            emit(buildLink(link, "${translator.displayName} ${q}p".trim(), origin, q))
             n++
         }
         if (n == 0) err.addT("tid=${translator.id}: 0 qualities parsed")
@@ -516,7 +526,7 @@ class RezkaUAProvider : MainAPI() {
             if (inlineSeason == season && inlineEpisode == episode) {
                 val inlineRaw = inlineStreamsRegex.find(pageHtml)?.groupValues?.get(1)
                 if (inlineRaw != null) {
-                    val activeName = translators.firstOrNull { it.id == inlineActiveId }?.name ?: name
+                    val activeName = translators.firstOrNull { it.id == inlineActiveId }?.displayName ?: name
                     parseStreams(inlineRaw.replace("\\/", "/")).forEach { (q, link) ->
                         emit(buildLink(link, "$activeName ${q}p".trim(), origin, q))
                         emitted++
@@ -599,7 +609,7 @@ class RezkaUAProvider : MainAPI() {
 
         var n = 0
         parseStreams(streams).forEach { (q, link) ->
-            emit(buildLink(link, "${translator.name} ${q}p".trim(), origin, q))
+            emit(buildLink(link, "${translator.displayName} ${q}p".trim(), origin, q))
             n++
         }
         if (n == 0) err.addT("tid=${translator.id}: 0 quality entries")
