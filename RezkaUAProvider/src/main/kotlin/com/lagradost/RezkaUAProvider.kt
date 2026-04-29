@@ -64,7 +64,9 @@ class RezkaUAProvider : MainAPI() {
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val document = app.get("${request.data}$page/").document
+        // ?filter=watching surfaces titles people are actively watching — fresher and more
+        // relevant than the default "newest upload" ordering.
+        val document = app.get("${request.data}$page/?filter=watching").document
         val home = document.select(".b-content__inline_item").map { it.toSearchResponse() }
         return newHomePageResponse(request.name, home)
     }
