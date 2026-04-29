@@ -218,10 +218,10 @@
     },
     {
         "iconUrl": "https://www.google.com/s2/favicons?domain=rezka-ua.in&sz=%size%",
-        "fileHash": "sha256-0dc738e6c078feb3f8e95810c8e80ed113cf9241b5c1f2577decadd8f29608e2",
+        "fileHash": "sha256-4e198ae5fc8d11c09f517a70c8144906a1f2935854b5e1f9f9beb123d4dba68d",
         "apiVersion": 1,
         "repositoryUrl": "https://github.com/TesterNA/cloudstream-extensions-uk",
-        "fileSize": 30096,
+        "fileSize": 22945,
         "status": 1,
         "language": "uk",
         "authors": [
@@ -233,7 +233,7 @@
             "Cartoon",
             "Anime"
         ],
-        "version": 17,
+        "version": 18,
         "internalName": "RezkaUAProvider",
         "description": "HDrezka \u2014 \u0444\u0456\u043b\u044c\u043c\u0438, \u0441\u0435\u0440\u0456\u0430\u043b\u0438, \u043c\u0443\u043b\u044c\u0442\u0444\u0456\u043b\u044c\u043c\u0438 \u0442\u0430 \u0430\u043d\u0456\u043c\u0435.",
         "url": "https://raw.githubusercontent.com/TesterNA/cloudstream-extensions-uk/builds/RezkaUAProvider.cs3",
