@@ -279,10 +279,10 @@
     },
     {
         "iconUrl": "https://www.google.com/s2/favicons?domain=uakino.club&sz=%size%",
-        "fileHash": "sha256-b98f5837516dfa5511902194b327cc85912695f0992b5b743c5b6e29d51f101b",
+        "fileHash": "sha256-feaaceda5ddeab747c730a3a359a21682149866149463cabb88a470399c6eae4",
         "apiVersion": 1,
         "repositoryUrl": "https://github.com/TesterNA/cloudstream-extensions-uk",
-        "fileSize": 23651,
+        "fileSize": 23671,
         "status": 1,
         "language": "uk",
         "authors": [
@@ -294,7 +294,7 @@
             "Movie",
             "AsianDrama"
         ],
-        "version": 19,
+        "version": 20,
         "internalName": "UakinoProvider",
         "description": "\u0414\u0438\u0432\u0456\u0442\u044c\u0441\u044f \u0444\u0456\u043b\u044c\u043c\u0438 \u0442\u0430 \u0441\u0435\u0440\u0456\u0430\u043b\u0438 \u043e\u043d\u043b\u0430\u0439\u043d \u0432 HD \u044f\u043a\u043e\u0441\u0442\u0456. \u0423 \u043d\u0430\u0441 \u043c\u043e\u0436\u043d\u0430 \u0434\u0438\u0432\u0438\u0442\u0438\u0441\u044f \u043a\u0456\u043d\u043e \u043e\u043d\u043b\u0430\u0439\u043d \u0431\u0435\u0437\u043a\u043e\u0448\u0442\u043e\u0432\u043d\u043e, \u0443 \u0432\u0438\u0441\u043e\u043a\u0456\u0439 \u044f\u043a\u043e\u0441\u0442\u0456 \u0442\u0430 \u0437 \u044f\u043a\u0456\u0441\u043d\u0438\u043c \u0443\u043a\u0440\u0430\u0457\u043d\u0441\u044c\u043a\u0438\u043c \u0434\u0443\u0431\u043b\u044f\u0436\u0435\u043c.",
         "url": "https://raw.githubusercontent.com/TesterNA/cloudstream-extensions-uk/builds/UakinoProvider.cs3",
